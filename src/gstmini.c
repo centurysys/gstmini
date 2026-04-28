@@ -101,6 +101,20 @@ static GstMiniPixelFormat gstmini_format_from_video_format(GstVideoFormat fmt)
     }
 }
 
+static GstVideoFormat gstmini_video_format_from_format(GstMiniPixelFormat fmt)
+{
+    switch (fmt) {
+    case GSTMINI_FORMAT_RGBX:
+        return GST_VIDEO_FORMAT_RGBx;
+    case GSTMINI_FORMAT_RGBA:
+        return GST_VIDEO_FORMAT_RGBA;
+    case GSTMINI_FORMAT_NV12:
+        return GST_VIDEO_FORMAT_NV12;
+    default:
+        return GST_VIDEO_FORMAT_UNKNOWN;
+    }
+}
+
 static int status_from_flow_return(GstFlowReturn flow)
 {
     switch (flow) {
@@ -611,6 +625,109 @@ int gstmini_appsrc_push_wrapped_buffer(
     if (!buffer) {
         free(notify);
         set_error("gst_buffer_new_wrapped_full failed");
+        return GSTMINI_ERR;
+    }
+
+    GST_BUFFER_PTS(buffer) = i64_to_clock_time(pts_ns);
+    GST_BUFFER_DTS(buffer) = GST_CLOCK_TIME_NONE;
+    GST_BUFFER_DURATION(buffer) = i64_to_clock_time(duration_ns);
+    GST_BUFFER_OFFSET(buffer) = GST_BUFFER_OFFSET_NONE;
+    GST_BUFFER_OFFSET_END(buffer) = GST_BUFFER_OFFSET_NONE;
+
+    GstFlowReturn flow = gst_app_src_push_buffer(GST_APP_SRC(p->appsrc), buffer);
+    return status_from_flow_return(flow);
+}
+
+int gstmini_appsrc_push_wrapped_video_buffer(
+    GstMiniPipeline *p,
+    uint8_t *data,
+    size_t size,
+    GstMiniPixelFormat format,
+    int width,
+    int height,
+    int n_planes,
+    const size_t *offsets,
+    const int *strides,
+    int64_t pts_ns,
+    int64_t duration_ns,
+    GstMiniAppsrcReleaseCallback release_cb,
+    void *user_data
+)
+{
+    if (!p || !p->appsrc || !data || size == 0) {
+        set_error("bad argument for appsrc wrapped video buffer");
+        return GSTMINI_BAD_ARG;
+    }
+    if (width <= 0 || height <= 0) {
+        set_error("bad video size for appsrc wrapped video buffer");
+        return GSTMINI_BAD_ARG;
+    }
+    if (n_planes <= 0 || n_planes > 4 || !offsets || !strides) {
+        set_error("bad video planes for appsrc wrapped video buffer");
+        return GSTMINI_BAD_ARG;
+    }
+
+    GstVideoFormat video_format = gstmini_video_format_from_format(format);
+    if (video_format == GST_VIDEO_FORMAT_UNKNOWN) {
+        set_error("unsupported video format for appsrc wrapped video buffer");
+        return GSTMINI_UNSUPPORTED;
+    }
+
+    gsize meta_offsets[GST_VIDEO_MAX_PLANES] = {0};
+    gint meta_strides[GST_VIDEO_MAX_PLANES] = {0};
+
+    for (int i = 0; i < n_planes; i++) {
+        if (strides[i] <= 0) {
+            set_error("bad video stride for appsrc wrapped video buffer");
+            return GSTMINI_BAD_ARG;
+        }
+        if (offsets[i] >= size) {
+            set_error("bad video offset for appsrc wrapped video buffer");
+            return GSTMINI_BAD_ARG;
+        }
+
+        meta_offsets[i] = (gsize)offsets[i];
+        meta_strides[i] = (gint)strides[i];
+    }
+
+    GstMiniWrappedBufferNotify *notify =
+        (GstMiniWrappedBufferNotify *)calloc(1, sizeof(*notify));
+    if (!notify) {
+        set_error("calloc wrapped video buffer notify failed");
+        return GSTMINI_ERR;
+    }
+
+    notify->release_cb = release_cb;
+    notify->user_data = user_data;
+
+    GstBuffer *buffer = gst_buffer_new_wrapped_full(
+        GST_MEMORY_FLAG_READONLY,
+        data,
+        size,
+        0,
+        size,
+        notify,
+        gstmini_wrapped_buffer_notify
+    );
+    if (!buffer) {
+        free(notify);
+        set_error("gst_buffer_new_wrapped_full failed");
+        return GSTMINI_ERR;
+    }
+
+    GstVideoMeta *meta = gst_buffer_add_video_meta_full(
+        buffer,
+        GST_VIDEO_FRAME_FLAG_NONE,
+        video_format,
+        (guint)width,
+        (guint)height,
+        (guint)n_planes,
+        meta_offsets,
+        meta_strides
+    );
+    if (!meta) {
+        gst_buffer_unref(buffer);
+        set_error("gst_buffer_add_video_meta_full failed");
         return GSTMINI_ERR;
     }
 

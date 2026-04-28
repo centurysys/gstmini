@@ -94,6 +94,14 @@ typedef struct GstMiniFrameView {
     void *map_info;
 } GstMiniFrameView;
 
+/*
+ * Callback invoked when a wrapped appsrc buffer is finally released by GStreamer.
+ *
+ * The callback may be called from a GStreamer streaming thread. Keep it minimal;
+ * for example, notify the application via pipe/eventfd and return immediately.
+ */
+typedef void (*GstMiniAppsrcReleaseCallback)(void *user_data);
+
 void gstmini_init(void);
 const char *gstmini_last_error(void);
 
@@ -102,14 +110,6 @@ int gstmini_pipeline_start(GstMiniPipeline *p);
 int gstmini_pipeline_stop(GstMiniPipeline *p);
 void gstmini_pipeline_close(GstMiniPipeline *p);
 int gstmini_pipeline_poll_event(GstMiniPipeline *p, GstMiniEvent *event, int timeout_ms);
-
-/*
- * Callback invoked when a wrapped appsrc buffer is finally released by GStreamer.
- *
- * The callback may be called from a GStreamer streaming thread. Keep it minimal;
- * for example, notify the application via pipe/eventfd and return immediately.
- */
-typedef void (*GstMiniAppsrcReleaseCallback)(void *user_data);
 
 /*
  * Push a copy of caller-owned memory into the named appsrc stored in GstMiniPipeline.
@@ -132,27 +132,24 @@ int gstmini_appsrc_push_wrapped_buffer(GstMiniPipeline *p, uint8_t *data, size_t
     int64_t pts_ns, int64_t duration_ns,
     GstMiniAppsrcReleaseCallback release_cb, void *user_data);
 
-/* Send EOS to the named appsrc stored in GstMiniPipeline. */
-int gstmini_appsrc_end_of_stream(GstMiniPipeline *p);
-
-int gstmini_appsink_pull_view(GstMiniPipeline *p, GstMiniFrameView *view, int timeout_ms);
-void gstmini_frame_view_release(GstMiniFrameView *view);
-
-int gstmini_pipeline_poll_event(GstMiniPipeline *p, GstMiniEvent *event, int timeout_ms);
-int gstmini_appsrc_push_buffer(GstMiniPipeline *p, const uint8_t *data, size_t size,
-    int64_t pts_ns, int64_t duration_ns);
-/* Send EOS to the named appsrc stored in GstMiniPipeline. */
-int gstmini_appsrc_end_of_stream(GstMiniPipeline *p);
-int gstmini_appsink_pull_view(GstMiniPipeline *p, GstMiniFrameView *view, int timeout_ms);
-void gstmini_frame_view_release(GstMiniFrameView *view);
-
 /*
- * Push a copy of caller-owned memory into the named appsrc stored in GstMiniPipeline.
+ * Push caller-owned video memory into appsrc without copying it and attach
+ * GstVideoMeta describing the buffer layout.
  *
- * data remains owned by the caller and may be reused immediately after this call returns.
- * pts_ns and duration_ns are nanoseconds. Pass a negative value to leave the GstBuffer
- * field as GST_CLOCK_TIME_NONE.
+ * offsets and strides must point to arrays with at least n_planes entries.
+ * data must remain valid until release_cb is invoked. gstmini never frees data.
  */
+int gstmini_appsrc_push_wrapped_video_buffer(GstMiniPipeline *p, uint8_t *data, size_t size,
+    GstMiniPixelFormat format, int width, int height, int n_planes,
+    const size_t *offsets, const int *strides,
+    int64_t pts_ns, int64_t duration_ns,
+    GstMiniAppsrcReleaseCallback release_cb, void *user_data);
+
+/* Send EOS to the named appsrc stored in GstMiniPipeline. */
+int gstmini_appsrc_end_of_stream(GstMiniPipeline *p);
+
+int gstmini_appsink_pull_view(GstMiniPipeline *p, GstMiniFrameView *view, int timeout_ms);
+void gstmini_frame_view_release(GstMiniFrameView *view);
 
 #ifdef __cplusplus
 }
