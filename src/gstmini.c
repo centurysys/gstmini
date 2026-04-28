@@ -557,6 +557,73 @@ int gstmini_appsrc_push_buffer(
     return status_from_flow_return(flow);
 }
 
+typedef struct GstMiniWrappedBufferNotify {
+    GstMiniAppsrcReleaseCallback release_cb;
+    void *user_data;
+} GstMiniWrappedBufferNotify;
+
+static void gstmini_wrapped_buffer_notify(gpointer user_data)
+{
+    GstMiniWrappedBufferNotify *notify = (GstMiniWrappedBufferNotify *)user_data;
+    if (!notify) return;
+
+    if (notify->release_cb) {
+        notify->release_cb(notify->user_data);
+    }
+
+    free(notify);
+}
+
+int gstmini_appsrc_push_wrapped_buffer(
+    GstMiniPipeline *p,
+    uint8_t *data,
+    size_t size,
+    int64_t pts_ns,
+    int64_t duration_ns,
+    GstMiniAppsrcReleaseCallback release_cb,
+    void *user_data
+)
+{
+    if (!p || !p->appsrc || !data || size == 0) {
+        set_error("bad argument for appsrc wrapped buffer");
+        return GSTMINI_BAD_ARG;
+    }
+
+    GstMiniWrappedBufferNotify *notify =
+        (GstMiniWrappedBufferNotify *)calloc(1, sizeof(*notify));
+    if (!notify) {
+        set_error("calloc wrapped buffer notify failed");
+        return GSTMINI_ERR;
+    }
+
+    notify->release_cb = release_cb;
+    notify->user_data = user_data;
+
+    GstBuffer *buffer = gst_buffer_new_wrapped_full(
+        GST_MEMORY_FLAG_READONLY,
+        data,
+        size,
+        0,
+        size,
+        notify,
+        gstmini_wrapped_buffer_notify
+    );
+    if (!buffer) {
+        free(notify);
+        set_error("gst_buffer_new_wrapped_full failed");
+        return GSTMINI_ERR;
+    }
+
+    GST_BUFFER_PTS(buffer) = i64_to_clock_time(pts_ns);
+    GST_BUFFER_DTS(buffer) = GST_CLOCK_TIME_NONE;
+    GST_BUFFER_DURATION(buffer) = i64_to_clock_time(duration_ns);
+    GST_BUFFER_OFFSET(buffer) = GST_BUFFER_OFFSET_NONE;
+    GST_BUFFER_OFFSET_END(buffer) = GST_BUFFER_OFFSET_NONE;
+
+    GstFlowReturn flow = gst_app_src_push_buffer(GST_APP_SRC(p->appsrc), buffer);
+    return status_from_flow_return(flow);
+}
+
 int gstmini_appsrc_end_of_stream(GstMiniPipeline *p)
 {
     if (!p || !p->appsrc) {
