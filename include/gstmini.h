@@ -95,19 +95,34 @@ typedef struct GstMiniFrameView {
 } GstMiniFrameView;
 
 void gstmini_init(void);
-
 const char *gstmini_last_error(void);
 
 GstMiniPipeline *gstmini_pipeline_open(const GstMiniOpenOptions *opts);
-
 int gstmini_pipeline_start(GstMiniPipeline *p);
 int gstmini_pipeline_stop(GstMiniPipeline *p);
 void gstmini_pipeline_close(GstMiniPipeline *p);
-
 int gstmini_pipeline_poll_event(GstMiniPipeline *p, GstMiniEvent *event, int timeout_ms);
 
 int gstmini_appsink_pull_view(GstMiniPipeline *p, GstMiniFrameView *view, int timeout_ms);
 void gstmini_frame_view_release(GstMiniFrameView *view);
+
+/*
+ * Push a copy of caller-owned memory into the named appsrc stored in GstMiniPipeline.
+ *
+ * data remains owned by the caller and may be reused immediately after this call returns.
+ * pts_ns and duration_ns are nanoseconds. Pass a negative value to leave the GstBuffer
+ * field as GST_CLOCK_TIME_NONE.
+ */
+int gstmini_appsrc_push_buffer(
+    GstMiniPipeline *p,
+    const uint8_t *data,
+    size_t size,
+    int64_t pts_ns,
+    int64_t duration_ns
+);
+
+/* Send EOS to the named appsrc stored in GstMiniPipeline. */
+int gstmini_appsrc_end_of_stream(GstMiniPipeline *p);
 
 #ifdef __cplusplus
 }

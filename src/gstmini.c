@@ -2,11 +2,13 @@
 
 #include <gst/gst.h>
 #include <gst/app/gstappsink.h>
+#include <gst/app/gstappsrc.h>
 #include <gst/video/video.h>
 
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <stdio.h>
+#include <limits.h>
 
 struct GstMiniPipeline {
     GstElement *pipeline;
@@ -20,12 +22,14 @@ typedef struct GstMiniMapHolder {
 
 static char g_last_error[512];
 
-static void set_error(const char *msg) {
+static void set_error(const char *msg)
+{
     if (msg == NULL) msg = "unknown error";
     snprintf(g_last_error, sizeof(g_last_error), "%s", msg);
 }
 
-static void set_gerror(const char *prefix, const GError *err) {
+static void set_gerror(const char *prefix, const GError *err)
+{
     if (err && err->message) {
         snprintf(g_last_error, sizeof(g_last_error), "%s: %s", prefix, err->message);
     } else {
@@ -33,25 +37,34 @@ static void set_gerror(const char *prefix, const GError *err) {
     }
 }
 
-static int64_t clock_time_to_i64(GstClockTime value) {
+static int64_t clock_time_to_i64(GstClockTime value)
+{
     if (!GST_CLOCK_TIME_IS_VALID(value)) {
         return -1;
     }
-
     if (value > (GstClockTime)INT64_MAX) {
         return INT64_MAX;
     }
-
     return (int64_t)value;
 }
 
-static void event_clear(GstMiniEvent *event) {
+static GstClockTime i64_to_clock_time(int64_t value)
+{
+    if (value < 0) {
+        return GST_CLOCK_TIME_NONE;
+    }
+    return (GstClockTime)value;
+}
+
+static void event_clear(GstMiniEvent *event)
+{
     if (!event) return;
     memset(event, 0, sizeof(*event));
     event->type = GSTMINI_EVENT_NONE;
 }
 
-static void view_clear(GstMiniFrameView *view) {
+static void view_clear(GstMiniFrameView *view)
+{
     if (!view) return;
     memset(view, 0, sizeof(*view));
     view->format = GSTMINI_FORMAT_UNKNOWN;
@@ -62,10 +75,10 @@ static void view_clear(GstMiniFrameView *view) {
     view->offset_end = UINT64_MAX;
 }
 
-static void copy_gst_object_name(char *dst, size_t dst_size, GstObject *obj) {
+static void copy_gst_object_name(char *dst, size_t dst_size, GstObject *obj)
+{
     if (!dst || dst_size == 0) return;
     dst[0] = '\0';
-
     if (!obj) return;
 
     const gchar *name = gst_object_get_name(obj);
@@ -74,7 +87,8 @@ static void copy_gst_object_name(char *dst, size_t dst_size, GstObject *obj) {
     }
 }
 
-static GstMiniPixelFormat gstmini_format_from_video_format(GstVideoFormat fmt) {
+static GstMiniPixelFormat gstmini_format_from_video_format(GstVideoFormat fmt)
+{
     switch (fmt) {
     case GST_VIDEO_FORMAT_RGBx:
         return GSTMINI_FORMAT_RGBX;
@@ -87,7 +101,34 @@ static GstMiniPixelFormat gstmini_format_from_video_format(GstVideoFormat fmt) {
     }
 }
 
-static void gstmini_fill_view_buffer_metadata(GstMiniFrameView *view, GstBuffer *buffer) {
+static int status_from_flow_return(GstFlowReturn flow)
+{
+    switch (flow) {
+    case GST_FLOW_OK:
+        return GSTMINI_OK;
+    case GST_FLOW_EOS:
+        set_error("appsrc returned EOS");
+        return GSTMINI_EOS;
+    case GST_FLOW_FLUSHING:
+        set_error("appsrc is flushing");
+        return GSTMINI_AGAIN;
+    case GST_FLOW_NOT_NEGOTIATED:
+        set_error("appsrc not negotiated");
+        return GSTMINI_ERR;
+    case GST_FLOW_ERROR:
+        set_error("appsrc flow error");
+        return GSTMINI_ERR;
+    case GST_FLOW_NOT_LINKED:
+        set_error("appsrc not linked");
+        return GSTMINI_ERR;
+    default:
+        set_error("appsrc unexpected flow return");
+        return GSTMINI_ERR;
+    }
+}
+
+static void gstmini_fill_view_buffer_metadata(GstMiniFrameView *view, GstBuffer *buffer)
+{
     if (!view || !buffer) return;
 
     view->pts_ns = clock_time_to_i64(GST_BUFFER_PTS(buffer));
@@ -101,7 +142,8 @@ static int gstmini_fill_view_from_video_info(
     GstMiniFrameView *view,
     const GstVideoInfo *info,
     GstMapInfo *map
-) {
+)
+{
     if (!view || !info || !map || !map->data) {
         set_error("bad argument for video view");
         return GSTMINI_BAD_ARG;
@@ -152,24 +194,22 @@ static int gstmini_fill_view_from_video_info(
     return GSTMINI_OK;
 }
 
-/* Existing functions below are the same as Step2, except pull_view now fills
- * GstMiniFrameView timing metadata.
- */
-
-void gstmini_init(void) {
+void gstmini_init(void)
+{
     static int initialized = 0;
-
     if (!initialized) {
         gst_init(NULL, NULL);
         initialized = 1;
     }
 }
 
-const char *gstmini_last_error(void) {
+const char *gstmini_last_error(void)
+{
     return g_last_error;
 }
 
-GstMiniPipeline *gstmini_pipeline_open(const GstMiniOpenOptions *opts) {
+GstMiniPipeline *gstmini_pipeline_open(const GstMiniOpenOptions *opts)
+{
     if (!opts || !opts->launch_desc || opts->launch_desc[0] == '\0') {
         set_error("launch_desc is empty");
         return NULL;
@@ -184,7 +224,6 @@ GstMiniPipeline *gstmini_pipeline_open(const GstMiniOpenOptions *opts) {
         if (err) g_error_free(err);
         return NULL;
     }
-
     if (err) {
         set_gerror("gst_parse_launch warning", err);
         g_error_free(err);
@@ -206,6 +245,11 @@ GstMiniPipeline *gstmini_pipeline_open(const GstMiniOpenOptions *opts) {
             gstmini_pipeline_close(p);
             return NULL;
         }
+        if (!GST_IS_APP_SRC(p->appsrc)) {
+            set_error("named appsrc element is not an appsrc");
+            gstmini_pipeline_close(p);
+            return NULL;
+        }
     }
 
     if (opts->appsink_name && opts->appsink_name[0] != '\0') {
@@ -215,12 +259,18 @@ GstMiniPipeline *gstmini_pipeline_open(const GstMiniOpenOptions *opts) {
             gstmini_pipeline_close(p);
             return NULL;
         }
+        if (!GST_IS_APP_SINK(p->appsink)) {
+            set_error("named appsink element is not an appsink");
+            gstmini_pipeline_close(p);
+            return NULL;
+        }
     }
 
     return p;
 }
 
-int gstmini_pipeline_start(GstMiniPipeline *p) {
+int gstmini_pipeline_start(GstMiniPipeline *p)
+{
     if (!p || !p->pipeline) {
         set_error("pipeline is null");
         return GSTMINI_BAD_ARG;
@@ -235,7 +285,8 @@ int gstmini_pipeline_start(GstMiniPipeline *p) {
     return GSTMINI_OK;
 }
 
-int gstmini_pipeline_stop(GstMiniPipeline *p) {
+int gstmini_pipeline_stop(GstMiniPipeline *p)
+{
     if (!p || !p->pipeline) {
         set_error("pipeline is null");
         return GSTMINI_BAD_ARG;
@@ -250,23 +301,21 @@ int gstmini_pipeline_stop(GstMiniPipeline *p) {
     return GSTMINI_OK;
 }
 
-void gstmini_pipeline_close(GstMiniPipeline *p) {
+void gstmini_pipeline_close(GstMiniPipeline *p)
+{
     if (!p) return;
 
     if (p->pipeline) {
         gst_element_set_state(p->pipeline, GST_STATE_NULL);
     }
-
     if (p->appsrc) {
         gst_object_unref(p->appsrc);
         p->appsrc = NULL;
     }
-
     if (p->appsink) {
         gst_object_unref(p->appsink);
         p->appsink = NULL;
     }
-
     if (p->pipeline) {
         gst_object_unref(p->pipeline);
         p->pipeline = NULL;
@@ -275,7 +324,8 @@ void gstmini_pipeline_close(GstMiniPipeline *p) {
     free(p);
 }
 
-int gstmini_pipeline_poll_event(GstMiniPipeline *p, GstMiniEvent *event, int timeout_ms) {
+int gstmini_pipeline_poll_event(GstMiniPipeline *p, GstMiniEvent *event, int timeout_ms)
+{
     if (!p || !p->pipeline || !event) {
         set_error("bad argument");
         return GSTMINI_BAD_ARG;
@@ -299,10 +349,7 @@ int gstmini_pipeline_poll_event(GstMiniPipeline *p, GstMiniEvent *event, int tim
     GstMessage *msg = gst_bus_timed_pop_filtered(
         bus,
         timeout,
-        GST_MESSAGE_ERROR |
-        GST_MESSAGE_EOS |
-        GST_MESSAGE_WARNING |
-        GST_MESSAGE_STATE_CHANGED
+        GST_MESSAGE_ERROR | GST_MESSAGE_EOS | GST_MESSAGE_WARNING | GST_MESSAGE_STATE_CHANGED
     );
 
     gst_object_unref(bus);
@@ -319,7 +366,6 @@ int gstmini_pipeline_poll_event(GstMiniPipeline *p, GstMiniEvent *event, int tim
         GError *err = NULL;
         gchar *debug = NULL;
         gst_message_parse_error(msg, &err, &debug);
-
         event->type = GSTMINI_EVENT_ERROR;
         if (err && err->message) {
             snprintf(event->message, sizeof(event->message), "%s", err->message);
@@ -328,59 +374,50 @@ int gstmini_pipeline_poll_event(GstMiniPipeline *p, GstMiniEvent *event, int tim
             snprintf(event->message, sizeof(event->message), "unknown GStreamer error");
             set_error("pipeline error");
         }
-
         if (debug) g_free(debug);
         if (err) g_error_free(err);
-
         gst_message_unref(msg);
         return GSTMINI_ERR;
     }
-
     case GST_MESSAGE_WARNING: {
         GError *err = NULL;
         gchar *debug = NULL;
         gst_message_parse_warning(msg, &err, &debug);
-
         event->type = GSTMINI_EVENT_WARNING;
         if (err && err->message) {
             snprintf(event->message, sizeof(event->message), "%s", err->message);
         } else {
             snprintf(event->message, sizeof(event->message), "GStreamer warning");
         }
-
         if (debug) g_free(debug);
         if (err) g_error_free(err);
-
         gst_message_unref(msg);
         return GSTMINI_OK;
     }
-
     case GST_MESSAGE_EOS:
         event->type = GSTMINI_EVENT_EOS;
         snprintf(event->message, sizeof(event->message), "end of stream");
         gst_message_unref(msg);
         return GSTMINI_EOS;
-
     case GST_MESSAGE_STATE_CHANGED: {
         GstState old_state;
         GstState new_state;
         GstState pending_state;
-
         gst_message_parse_state_changed(msg, &old_state, &new_state, &pending_state);
-
         event->type = GSTMINI_EVENT_STATE_CHANGED;
         event->old_state = (int)old_state;
         event->new_state = (int)new_state;
         event->pending_state = (int)pending_state;
-        snprintf(event->message, sizeof(event->message),
-                 "state changed: %s -> %s",
-                 gst_element_state_get_name(old_state),
-                 gst_element_state_get_name(new_state));
-
+        snprintf(
+            event->message,
+            sizeof(event->message),
+            "state changed: %s -> %s",
+            gst_element_state_get_name(old_state),
+            gst_element_state_get_name(new_state)
+        );
         gst_message_unref(msg);
         return GSTMINI_OK;
     }
-
     default:
         event->type = GSTMINI_EVENT_UNKNOWN;
         snprintf(event->message, sizeof(event->message), "unknown message");
@@ -389,7 +426,8 @@ int gstmini_pipeline_poll_event(GstMiniPipeline *p, GstMiniEvent *event, int tim
     }
 }
 
-int gstmini_appsink_pull_view(GstMiniPipeline *p, GstMiniFrameView *view, int timeout_ms) {
+int gstmini_appsink_pull_view(GstMiniPipeline *p, GstMiniFrameView *view, int timeout_ms)
+{
     if (!p || !p->appsink || !view) {
         set_error("bad argument");
         return GSTMINI_BAD_ARG;
@@ -413,13 +451,11 @@ int gstmini_appsink_pull_view(GstMiniPipeline *p, GstMiniFrameView *view, int ti
 
     GstBuffer *buffer = gst_sample_get_buffer(sample);
     GstCaps *caps = gst_sample_get_caps(sample);
-
     if (!buffer) {
         gst_sample_unref(sample);
         set_error("sample has no buffer");
         return GSTMINI_ERR;
     }
-
     if (!caps) {
         gst_sample_unref(sample);
         set_error("sample has no caps");
@@ -464,7 +500,8 @@ int gstmini_appsink_pull_view(GstMiniPipeline *p, GstMiniFrameView *view, int ti
     return GSTMINI_OK;
 }
 
-void gstmini_frame_view_release(GstMiniFrameView *view) {
+void gstmini_frame_view_release(GstMiniFrameView *view)
+{
     if (!view) return;
 
     GstSample *sample = (GstSample *)view->sample;
@@ -474,14 +511,59 @@ void gstmini_frame_view_release(GstMiniFrameView *view) {
     if (buffer && holder) {
         gst_buffer_unmap(buffer, &holder->map);
     }
-
     if (holder) {
         free(holder);
     }
-
     if (sample) {
         gst_sample_unref(sample);
     }
 
     view_clear(view);
+}
+
+int gstmini_appsrc_push_buffer(
+    GstMiniPipeline *p,
+    const uint8_t *data,
+    size_t size,
+    int64_t pts_ns,
+    int64_t duration_ns
+)
+{
+    if (!p || !p->appsrc || !data || size == 0) {
+        set_error("bad argument for appsrc push buffer");
+        return GSTMINI_BAD_ARG;
+    }
+
+    GstBuffer *buffer = gst_buffer_new_allocate(NULL, size, NULL);
+    if (!buffer) {
+        set_error("gst_buffer_new_allocate failed");
+        return GSTMINI_ERR;
+    }
+
+    const gsize written = gst_buffer_fill(buffer, 0, data, size);
+    if (written != size) {
+        gst_buffer_unref(buffer);
+        set_error("gst_buffer_fill failed");
+        return GSTMINI_ERR;
+    }
+
+    GST_BUFFER_PTS(buffer) = i64_to_clock_time(pts_ns);
+    GST_BUFFER_DTS(buffer) = GST_CLOCK_TIME_NONE;
+    GST_BUFFER_DURATION(buffer) = i64_to_clock_time(duration_ns);
+    GST_BUFFER_OFFSET(buffer) = GST_BUFFER_OFFSET_NONE;
+    GST_BUFFER_OFFSET_END(buffer) = GST_BUFFER_OFFSET_NONE;
+
+    GstFlowReturn flow = gst_app_src_push_buffer(GST_APP_SRC(p->appsrc), buffer);
+    return status_from_flow_return(flow);
+}
+
+int gstmini_appsrc_end_of_stream(GstMiniPipeline *p)
+{
+    if (!p || !p->appsrc) {
+        set_error("bad argument for appsrc EOS");
+        return GSTMINI_BAD_ARG;
+    }
+
+    GstFlowReturn flow = gst_app_src_end_of_stream(GST_APP_SRC(p->appsrc));
+    return status_from_flow_return(flow);
 }
